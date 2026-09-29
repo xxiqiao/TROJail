@@ -131,7 +131,7 @@ case "${victim_arg,,}" in
     target_model_label="Qwen2.5-7B-Instruct"
     env_model_dir="Qwen2.5-7B-Instruct"
     env_max_len=13312
-    default_training_steps=390
+    default_training_steps=260
     default_attacker_dir="./checkpoints/jailbreak_grpo/new_GRPO_Heuristic_attack_Qwen3B_victim_Qwen-25-7B_classifier_Llama2_hlambda_01_threshold_09_steps_260_lr_1e-6_kl_coef_001_entropy_coef_001"
     ;;
 esac
