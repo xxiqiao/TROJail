@@ -11,6 +11,9 @@ from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from .base_llm import ConcurrentLLM
 # import time
 
+import pdb
+import json
+
 
 class VllmWrapperWg: # Thi is a developing class for eval and test
 	def __init__(self, config, tokenizer):
@@ -46,18 +49,18 @@ class VllmWrapperWg: # Thi is a developing class for eval and test
 
 	def generate_sequences(self, lm_inputs: DataProto):
 		"""
-		Convert the input ids to text, and then generate the sequences. Finally create a dataproto. 
+		Convert the input ids to text, and then generate the sequences. Finally create a dataproto.
 		This aligns with the verl Worker Group interface.
 		"""
 		# NOTE: free_cache_engine is not used in the vllm wrapper. Only used in the verl vllm.
 		# cache_action = lm_inputs.meta_info.get('cache_action', None)
-
 		input_ids = lm_inputs.batch['input_ids']
 		input_texts = self.tokenizer.batch_decode(input_ids, skip_special_tokens=False)
-		input_texts = [i.replace("<|endoftext|>", "") for i in input_texts]
 
+		# input_texts = [i.replace("<|endoftext|>", "") for i in input_texts]
+		# pdb.set_trace()
 		outputs = self.llm.generate(input_texts, sampling_params=self.sampling_params)
-		texts = [output.outputs[0].text for output in outputs] 
+		texts = [output.outputs[0].text for output in outputs]
 		lm_outputs = DataProto()
 		lm_outputs.non_tensor_batch = {
 			'response_texts': texts,
@@ -67,29 +70,29 @@ class VllmWrapperWg: # Thi is a developing class for eval and test
 		lm_outputs.meta_info = lm_inputs.meta_info
 
 		return lm_outputs
-	
+
 class ApiCallingWrapperWg:
     """Wrapper class for API-based LLM calls that fits into the VERL framework"""
-    
+
     def __init__(self, config, tokenizer):
         self.config = config
         self.tokenizer = tokenizer
         model_info = config.model_info[config.model_config.model_name]
         self.llm_kwargs = model_info.generation_kwargs
-        
-        
+
+
         self.llm = ConcurrentLLM(
 			provider=model_info.provider_name,
             model_name=model_info.model_name,
             max_concurrency=config.model_config.max_concurrency
         )
-        
+
         print(f'API-based LLM ({model_info.provider_name} - {model_info.model_name}) initialized')
 
 
     def generate_sequences(self, lm_inputs: DataProto) -> DataProto:
         """
-        Convert the input ids to text, make API calls to generate responses, 
+        Convert the input ids to text, make API calls to generate responses,
         and create a DataProto with the results.
         """
 
@@ -109,7 +112,7 @@ class ApiCallingWrapperWg:
 			'group_ids': lm_inputs.non_tensor_batch['group_ids']
 		} # this is a bit hard-coded to bypass the __init__ check in DataProto
         lm_outputs.meta_info = lm_inputs.meta_info
-        
+
         return lm_outputs
 
 class LLMAgentProxy:
@@ -144,17 +147,38 @@ class LLMAgentProxy:
 		es_manager = self.val_es_manager if val else self.train_es_manager
 		ctx_manager = self.val_ctx_manager if val else self.train_ctx_manager
 		env_outputs = es_manager.reset()
+		batch_size = self.config.agent_proxy.lm_output_batch
 
 		for i in range(self.config.agent_proxy.max_turn):
+			print(f"Rollout step: {i}")
+			# pdb.set_trace()
 			lm_inputs: DataProto = ctx_manager.get_lm_inputs(env_outputs, prepare_for_update=False)
 			lm_inputs.meta_info = dataproto.meta_info # TODO: setup vllm early stop when max length is reached. make sure this can be done
-			lm_outputs: DataProto = self.generate_sequences(lm_inputs)
+
+			# lm_outputs: DataProto = self.generate_sequences(lm_inputs)
+
+			total_len = len(lm_inputs)
+			chunks = (total_len + batch_size - 1) // batch_size
+
+			sub_inputs_list = [lm_inputs.slice(start, min(start + batch_size, total_len)) for start in range(0, total_len, batch_size)]
+
+			sub_outputs_list = []
+			for sub_inputs in sub_inputs_list:
+				sub_outputs = self.generate_sequences(sub_inputs)
+				sub_outputs_list.append(sub_outputs)
+
+			lm_outputs = DataProto.concat(sub_outputs_list)
+
 			env_inputs: List[Dict] = ctx_manager.get_env_inputs(lm_outputs)
+			# pdb.set_trace()
 			env_outputs: List[Dict] = es_manager.step(env_inputs)
 			if len(env_outputs) == 0: # all finished
 				break
-		rollout_states = es_manager.get_rollout_states() 
+		rollout_states = es_manager.get_rollout_states()
 		rollouts = ctx_manager.formulate_rollouts(rollout_states)
+		# pdb.set_trace()
+		# rollouts.batch["rm_scores"], rollouts.batch["original_rm_scores"]
+		# rollout_states[2]["history"][-1]['reward']
 		# self.tokenizer.batch_decode(rollouts.batch['input_ids'], skip_special_tokens=False) # see all the trajectories
 		return rollouts
 
@@ -167,7 +191,7 @@ def main(config):
 	actor_wg = VllmWrapperWg(config, tokenizer)
 	proxy = LLMAgentProxy(config, actor_wg, tokenizer)
 	import time
-	for _ in range(3):
+	for _ in range(1):
 		start_time = time.time()
 		rollouts = proxy.rollout(DataProto(batch=None, non_tensor_batch=None, meta_info={'eos_token_id': 151645, 'pad_token_id': 151643, 'recompute_log_prob': False, 'do_sample':config.actor_rollout_ref.rollout.do_sample, 'validate': True}), val=True)
 		end_time = time.time()
@@ -180,6 +204,27 @@ def main(config):
 		print(f'metrics:')
 		for k, v in metrics.items():
 			print(f'{k}: {v}')
+
+
+		rollout_states = proxy.val_es_manager.get_rollout_states()
+		dialogue_histories = []
+		for env in rollout_states:
+			dialogue_histories.append({
+				"env_id": env['env_id'],
+				"dialogue_history": env.get('dialogue_history', []),
+				"metrics": env.get('metrics', {})
+			})
+
+
+		file_path = f"../RAGEN/run_logs/eval_dialogues/{config.model_path.split('/')[-1]}.json"
+		with open(file_path, "w", encoding="utf-8") as f:
+			json.dump(dialogue_histories, f, ensure_ascii=False, indent=2)
+		print(f"Saved dialogue histories to {file_path}")
+
+		metrics_file_path = f"../RAGEN/run_logs/eval_metrics/{config.model_path.split('/')[-1]}.json"
+		with open(metrics_file_path, "w", encoding="utf-8") as f:
+			json.dump(metrics, f, ensure_ascii=False, indent=2)
+		print(f"Saved metrics to {metrics_file_path}")
 
 # @hydra.main(version_base=None, config_path="../../config", config_name="evaluate_api_llm")
 # def main(config):

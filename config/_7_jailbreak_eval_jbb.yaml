@@ -1,0 +1,162 @@
+defaults:
+  - base
+
+system:
+  CUDA_VISIBLE_DEVICES: "2,3"
+  # CUDA_VISIBLE_DEVICES: "3,4,5,6"
+  # CUDA_VISIBLE_DEVICES: "3,4"
+
+
+ppo_mini_batch_size: 8
+# model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/output/Qwen2.5-7B-Instruct-full-sft-multiturn-epoch-3
+# model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Qwen2.5-7B-Instruct
+# model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Qwen2.5-3B-Instruct
+model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Qwen2.5-0.5B-Instruct
+# experiment_name: GRPO_Prime_model_Qwen05B_classifier_Llama2_threshold_09
+# experiment_name: GRPO_Prime_model_Qwen3B_classifier_Llama2_threshold_09
+# experiment_name: GRPO_Prime_model_Qwen3B_classifier_Llama2_threshold_09_steps_288
+experiment_name: GRPO_Heuristic_model_Qwen3B_classifier_Mistral_hlamda_05_threshold_09_steps_288
+
+
+
+actor_rollout_ref:
+  model:
+    path: ${model_path}
+    use_remove_padding: True # Required for ulysses_sequence_parallel_size > 1
+  actor:
+    ppo_mini_batch_size: ${ppo_mini_batch_size}
+    # ppo_max_token_len_per_gpu: 16384
+    use_dynamic_bsz: True
+    # ppo_max_token_len_per_gpu: 8192 # max_model_len * 2 / ulysses_sequence_parallel_size
+    # ppo_max_token_len_per_gpu: 10000
+    ppo_max_token_len_per_gpu: 5000
+    use_kl_loss: False
+    ulysses_sequence_parallel_size: 2
+    # fsdp_config:
+    # param_offload: True
+    # optimizer_offload: True
+  rollout:
+    #  tensor_model_parallel_size: 4
+    tensor_model_parallel_size: 2
+    #  max_model_len: 8192
+    max_model_len: 10000
+    #  max_model_len: 13312
+    response_length: 128 # single-turn response length
+    gpu_memory_utilization: 0.5
+    #  max_num_batched_tokens: 32768
+    #  max_num_batched_tokens: 8192
+    max_num_batched_tokens: 10000
+    #  max_num_batched_tokens: 13312
+    rollout_filter_ratio: 0.5
+    tp_size_check: False
+    val_kwargs:
+      do_sample: False
+      temperature: 0.0
+      top_p: 0.9
+
+critic:
+  ppo_mini_batch_size: ${ppo_mini_batch_size}
+  model:
+    path: ${model_path}
+
+algorithm:
+  adv_estimator: grpo_heuristic
+  filter_single_turn: False
+  filter_empty_response: False
+  sample_filtering: False
+  similarity_ablation: False
+  harm_ablation: False
+  single_turn_harm_override: False
+  process_adv_lambda: 1.0
+  heuristic_process_adv_lambda: 1.0
+  lambda_harm: 2.0
+
+trainer:
+  project_name: jailbreak_grpo
+  experiment_name: ${experiment_name}
+  # total_training_steps: 144 # 575 / 4
+  total_training_steps: 288 # 575 / 4 * 2
+  eval_times: 3
+  log_val_generations: 200
+  # val_before_train: False
+  val_before_train: True
+  val_only: True
+  rollout_data_dir: run_logs/${experiment_name}/train_rollout # directory for logging the rollout data, no dump if null
+  validation_data_dir: run_logs/${experiment_name}/val_rollout # directory for logging the validation data, no dump if null
+  n_gpus_per_node: 2
+  # save_freq: 144
+  # save_freq: 288
+  save_best_checkpoint: True
+  test_freq: 20
+  resume_mode: best
+  logger: [ 'console', 'tensorboard']
+  tensorboard_dir: ${oc.env:TROJAIL_TENSORBOARD_DIR,./tensorboard_log}/${experiment_name}
+
+ctx_manager:
+  add_prefix_suffix_prompt: False # [ADDED] False -> Don't add prefix prompt to the response. May be combiend with `agent_proxy.parse_response=False`
+
+agent_proxy:
+  max_actions_per_turn: 1
+  max_turn: 5
+  lm_output_batch: 50
+  parse_response: False # [ADDED] False -> Don't parse response, use the raw response from the LLM. May be combiend with `ctx_manager.add_prefix_prompt=False`
+  enable_think: False # False -> no think RL
+  reward_normalization:
+    method: "mean_std" # asym_clip / identity / mean_std
+
+
+env_llm:
+  # model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Llama-3.1-8B-Instruct
+  model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Llama-3.2-3B-Instruct
+  base_url: http://localhost:8001/v1
+  api_key: ${oc.env:ENV_LLM_API_KEY,EMPTY}
+  temperature: 0.7
+  # temperature: 0.0
+  max_tokens: 1024
+  # max_tokens: 8192
+
+judger_llm:
+  # model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/HarmBench-Mistral-7b-val-cls
+  model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/HarmBench-Llama-2-13b-cls
+  base_url: http://localhost:8002/v1
+  api_key: ${oc.env:JUDGER_LLM_API_KEY,EMPTY}
+  temperature: 0.0
+  max_tokens: 1
+  wanted_token: "Yes"
+
+
+# judger_llm:
+#   model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Llama-Guard-3-8B
+#   base_url: http://localhost:8002/v1
+#   temperature: 0.0
+
+#   wanted_token: "unsafe"
+
+
+es_manager:
+  format_penalty: 0.0 # no format penalty, because infinite actions in jailbreak
+  train:
+    env_groups: 4
+    # under the same group, the env config and env seed are ensured to be equal
+    group_size: 8
+    env_configs:
+      tags: ["Jailbreak"]
+      n_groups: [4] # If not set, all env names divide nums equally. Under the same group, the env config and env seed (prompt) are equal in each generation
+  val:
+    # env_groups: 32
+
+    # env_groups: 488
+    env_groups: 55
+    group_size: 3 # should be set to 1 because when val temperature is set to 0 and group size > 1, there will be repetitive prompts which leads to same trajectory.
+    env_configs:
+      tags: ["Jailbreak"]
+      # n_groups: [32] # TODO: If not set, all env names divide nums equally. Under the same group, the env config and env seed (prompt) are equal in each generation
+      # n_groups: [104]
+      # n_groups: [488]
+      n_groups: [55]
+
+
+reward_model:
+  reward_normalization:
+    grouping: "state"
+    method: "mean_std" # asym_clip / identity / mean_std

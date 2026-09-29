@@ -18,6 +18,10 @@ tensorflow/my_graph/*
 # C extensions
 *.so
 data
+temp/
+nohup_logs/
+tensorboard_log/
+run_logs/
 
 # Distribution / packaging
 .Python

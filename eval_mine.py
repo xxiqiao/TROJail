@@ -3,7 +3,7 @@ Borrowed from verl.trainer.main_ppo.py
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
 
-from ragen.trainer.agent_trainer import RayAgentTrainer
+from ragen.trainer.eval_agent_trainer import RayAgentTrainer
 
 import ray
 import hydra
@@ -168,6 +168,7 @@ def run_ppo(config) -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(config.system.CUDA_VISIBLE_DEVICES)
     print(f"CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']}")
     os.environ["ENSURE_CUDA_VISIBLE_DEVICES"] = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    # ray_temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "ray")
     ray_temp_dir = os.environ.get(
         "RAY_TEMP_DIR",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "ray"),

@@ -42,16 +42,16 @@ main() {
     
     # Create and activate conda environment
     # if not exists, create it
-    if ! conda env list | grep -q "ragen"; then
-        print_step "Creating conda environment 'ragen' with Python 3.12..."
-        conda create -n ragen python=3.12 -y
+    if ! conda env list | grep -q "ragen_new"; then
+        print_step "Creating conda environment 'ragen_new' with Python 3.12..."
+        conda create -n ragen_new python=3.12.12 -y
     else
-        print_step "Conda environment 'ragen' already exists"
+        print_step "Conda environment 'ragen_new' already exists"
     fi
     
     # Need to source conda for script environment
     eval "$(conda shell.bash hook)"
-    conda activate ragen
+    conda activate ragen_new
 
     # Install package in editable mode
     print_step "setting up verl..."
@@ -62,7 +62,7 @@ main() {
     cd ..
     
     # Install package in editable mode
-    print_step "Installing ragen package..."
+    print_step "Installing ragen_new package..."
     pip install -e .
     
     # Install PyTorch with CUDA if available
@@ -94,7 +94,8 @@ main() {
         pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
         
         print_step "Installing flash-attention..."
-        pip3 install flash-attn==2.7.4.post1 --no-build-isolation
+        # pip3 install flash-attn==2.7.4.post1 --no-build-isolation
+        pip3 install ../flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
     else
         print_step "Installing PyTorch without CUDA support..."
         pip install torch==2.6.0
@@ -102,13 +103,13 @@ main() {
     
     # Install remaining requirements
     print_step "Installing additional requirements..."
-    pip install -r requirements.txt
+    pip install --index-url https://pypi.org/simple -r requirements.txt
 
-    print_step "Downloading data..."
-    python scripts/download_data.py
+    # print_step "Downloading data..."
+    # python scripts/download_data.py
 
     echo -e "${GREEN}Installation completed successfully!${NC}"
-    echo "To activate the environment, run: conda activate ragen"
+    echo "To activate the environment, run: conda activate ragen_new"
     
     # export CMAKE_POLICY_VERSION_MINIMUM=3.5 && pip install alfworld[full]
     # alfworld-download

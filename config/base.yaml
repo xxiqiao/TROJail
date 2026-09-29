@@ -11,7 +11,7 @@ seed:
 
 micro_batch_size_per_gpu: 1
 ppo_mini_batch_size: 32
-model_path: Qwen/Qwen2.5-0.5B-Instruct
+model_path: ${oc.env:RAGEN_LLM_ROOT,/path/to/models}/Qwen2.5-0.5B-Instruct
 enable_response_mask: True # Enabling response mask could improve stability of rollout/old_log_prob, as P(st|history) are no longer calculated in loss here. See https://docs.google.com/document/d/1bg7obeiKTExuHHBl5uOiSpec5uLDZ2Tgvxy6li5pHX4/edit?usp=sharing for more details.
 grpo_advantage_length_weight: False # if you do not enable this and critic/advantage_estimator is GRPO, and the critic/advantages/mean is too low, then you can try enabling this to encourage reasoning and forbid collapse
 
@@ -135,3 +135,23 @@ ctx_manager:
       top_p: ${actor_rollout_ref.rollout.top_p}
       top_k: ${actor_rollout_ref.rollout.top_k}
       kwargs: null
+
+# env_llm:
+#   model_path: ../LLMs/Llama-3.1-8B-Instruct
+#   gpu_memory_utilization: 0.9
+#   max_model_len: 32768
+#   tensor_parallel_size: 1
+#   dtype: bfloat16
+#   temperature: 0.7
+#   max_tokens: 4096
+#   cuda_visible_devices: 0
+
+# judger_llm:
+#   model_path: ../LLMs/Llama-Guard-3-8B
+#   gpu_memory_utilization: 0.9
+#   max_model_len: 32768
+#   tensor_parallel_size: 1
+#   dtype: bfloat16
+#   temperature: 0.0
+#   max_tokens: 1
+#   cuda_visible_devices: 1

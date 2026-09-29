@@ -56,6 +56,8 @@ from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManage
 from verl.workers.fsdp_workers import create_device_mesh, get_sharding_strategy
 from peft import LoraConfig, TaskType, get_peft_model
 
+import pdb
+
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
@@ -228,7 +230,8 @@ class ActorRolloutRefWorker(Worker):
                 actor_module.enable_input_require_grads()
                 # Convert config to regular Python types before creating PEFT model
                 lora_config = {
-                    'task_type': TaskType.CAUSAL_LM,
+                    # 'task_type': TaskType.CAUSAL_LM,
+                    'task_type': TaskType.SEQ_CLS,
                     'r': self.config.model.lora_rank,
                     'lora_alpha': self.config.model.lora_alpha,
                     'target_modules': convert_to_regular_types(self.config.model.target_modules),
@@ -353,6 +356,7 @@ class ActorRolloutRefWorker(Worker):
         assert self.world_size % infer_tp == 0, f"rollout world_size: {self.world_size} is not divisible by infer_tp: {infer_tp}"
         rollout_device_mesh = init_device_mesh("cuda", mesh_shape=(dp, infer_tp), mesh_dim_names=["dp", "infer_tp"])
         rollout_name = self.config.rollout.name
+        # pdb.set_trace()
         if rollout_name == "hf":
             from verl.workers.rollout import HFRollout
             from verl.workers.sharding_manager.base import BaseShardingManager
@@ -876,7 +880,8 @@ class CriticWorker(Worker):
             critic_module.enable_input_require_grads()
             # Convert config to regular Python types before creating PEFT model
             lora_config = {
-                'task_type': TaskType.CAUSAL_LM,
+                # 'task_type': TaskType.CAUSAL_LM,
+                'task_type': TaskType.SEQ_CLS,
                 'r': self.config.model.lora_rank,
                 'lora_alpha': self.config.model.lora_alpha,
                 'target_modules': convert_to_regular_types(self.config.model.target_modules),
@@ -1217,6 +1222,7 @@ class RewardModelWorker(Worker):
             batch_size, seqlen = input_ids.shape
             attention_mask = micro_batch["attention_mask"]
             position_ids = micro_batch["position_ids"]
+            # pdb.set_trace()
 
             if self.use_remove_padding:
                 input_ids_rmpad, indices, *_ = unpad_input(input_ids.unsqueeze(-1), attention_mask)  # input_ids_rmpad (total_nnz, ...)
@@ -1224,6 +1230,7 @@ class RewardModelWorker(Worker):
 
                 # unpad the position_ids to align the rotary
                 position_ids_rmpad = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."), indices).transpose(0, 1)
+                position_ids_rmpad = position_ids_rmpad - 1 # Added to avoid Runtime Error
 
                 # pad and slice the inputs if sp > 1
                 if self.ulysses_sequence_parallel_size > 1:

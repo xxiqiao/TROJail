@@ -21,6 +21,8 @@ from tensordict import TensorDict
 from dataclasses import asdict
 register_resolvers()
 
+import pdb
+
 def get_special_tokens(tokenizer: AutoTokenizer):
     if "qwen" in tokenizer.name_or_path.lower():
         special_token = tokenizer.encode("<|im_start|>")[0]
@@ -32,7 +34,7 @@ def get_special_tokens(tokenizer: AutoTokenizer):
         raise ValueError(f"Unsupported model: {tokenizer.name_or_path}")
     return special_token, reward_token
 
-def get_masks_and_scores(input_ids: torch.Tensor, tokenizer: AutoTokenizer, all_scores: List[List[float]] = None, use_turn_scores: bool = False, enable_response_mask: bool = False):
+def get_masks_and_scores(input_ids: torch.Tensor, tokenizer: AutoTokenizer, messages_list: List[List[Dict]], all_scores: List[List[float]] = None, use_turn_scores: bool = False, enable_response_mask: bool = False, filter_single_turn: bool = False):
     """
     input_ids: shape (bsz, seq_len)
     Get loss mask that only learns between <|im_start|>assistant and <|im_end|>. Currently only supports qwen.
@@ -49,9 +51,23 @@ def get_masks_and_scores(input_ids: torch.Tensor, tokenizer: AutoTokenizer, all_
     response_mask = (turn_indicators % 2 == 1) & (turn_indicators > 1)
     
     score_tensor = torch.zeros_like(input_ids, dtype=torch.float32)
-    if use_turn_scores:
+    if use_turn_scores: 
+        # NOTE: Never enter this branch
+        # # Build a per-sample list indicating which assistant turns have empty responses
+        # empty_assistant_turns = []  # List[List[bool]] with shape: (batch_size, num_assistant_turns_for_sample)
+        # for messages in messages_list:
+        #     assistant_contents = [m.get("content", "") for m in messages if m.get("role") == "assistant"]
+        #     empty_assistant_turns.append([c.strip() == "" for c in assistant_contents])
+
         for idx, scores in enumerate(zip_longest(*all_scores, fillvalue=0)):
             scores = torch.tensor(scores, dtype=torch.float32)
+            # # Zero-out scores where the corresponding assistant response is empty for this turn
+            # empty_mask = torch.tensor(
+            #     [(idx < len(flags) and flags[idx]) for flags in empty_assistant_turns],
+            #     dtype=torch.bool,
+            # )
+            # scores = torch.where(empty_mask, torch.zeros_like(scores), scores)
+
             turn_indicator = idx * 2 + 3 # 0: pad. 1: system. 2+2n: user. 3+2n: assistant
             reward_position = (input_ids == reward_token) & (turn_indicators == turn_indicator)
             # Set the last token of the rows where all positions are False to True
@@ -61,7 +77,11 @@ def get_masks_and_scores(input_ids: torch.Tensor, tokenizer: AutoTokenizer, all_
             # for Qwen, there is a "\n" between special token and reward token, so we shift this to make sure reward is assigned to the last token of a turn
             score_tensor = score_tensor.roll(shifts=1, dims=-1)
     else:
-        scores = [sum(i) for i in all_scores]
+        # pdb.set_trace()
+        if filter_single_turn:
+            scores = [0 if len(i) == 1 else sum(i) for i in all_scores]
+        else:
+            scores = [sum(i) for i in all_scores]
         score_tensor[:, -1] = torch.tensor(scores, dtype=torch.float32)
     score_tensor = score_tensor[:, 1:] # remove the first token
     loss_mask = loss_mask[:, :-1] # remove the last token
@@ -246,32 +266,38 @@ class ContextManager:
                 env_output['history'] = env_output['history'][-max_k:]
             
             messages = [
-                {"role": "system", "content": f"You're a helpful assistant. "}, 
-                {"role": "user", "content": self.prefix_lookup[env_output["env_id"]]}
+                # {"role": "system", "content": f"You're a helpful assistant. "}, 
+                # {"role": "user", "content": self.prefix_lookup[env_output["env_id"]]}
+                {"role": "system", "content": self.prefix_lookup[env_output["env_id"]]}, 
+                {"role": "user", "content": env_output["init_prompt"]}
             ]
+            # pdb.set_trace()
 
             for idx, content in enumerate(env_output["history"]):
-                messages[-1]["content"] += f"\nTurn {idx + 1}:\n"
-                if "state" in content:
+                # messages[-1]["content"] += f"\nTurn {idx + 1}:\n"
+                if "state" in content and self.config.ctx_manager.add_prefix_suffix_prompt:
                     FORMAT_PROMPT = "<think> [Your thoughts] </think> <answer> [your answer] </answer>" if self.config.agent_proxy.enable_think else "<answer> [your answer] </answer>"
                     LENGTH_PROMPT = f"Max response length: {self.env_config_lookup[env_output['env_id']]['max_tokens']} words (tokens)."
                     messages[-1]["content"] += f"State:\n{content['state']}\nYou have {content['actions_left']} actions left. Always output: {FORMAT_PROMPT} with no extra text. Strictly follow this format. {LENGTH_PROMPT}\n"
                 if "llm_response" in content:
                     messages.append({"role": "assistant", "content": content["llm_response"]})
-                if "reward" in content and not (prepare_for_update and idx == len(env_output["history"]) - 1):
+                if "env_response" in content:
+                    messages.append({"role": "user", "content": content['env_response']})
+                # if "reward" in content and not (prepare_for_update and idx == len(env_output["history"]) - 1):
                     # when prepare for update, we do not add the reward from the n+1 turn to the trajectory
-                    messages.append({"role": "user", "content": f"Reward:\n{content['reward']}\n"})
+                    # messages.append({"role": "user", "content": f"Reward:\n{content['reward']}\n"})
+
                     
 
             # NOTE: this assertion is important for loss mask computation        
             assert all(msg["role"] == "assistant" for msg in messages[2::2])
 
             text = self.tokenizer.apply_chat_template(messages, add_generation_prompt=(not prepare_for_update), tokenize=False)
-            if not prepare_for_update:
-                if self.config.agent_proxy.enable_think:
-                    text += "<think>" # force the LLM to think before answering
-                else:
-                    text += "<answer>" # force the LLM to answer
+            # if not prepare_for_update:
+            #     if self.config.agent_proxy.enable_think:
+            #         text += "<think>" # force the LLM to think before answering
+            #     else:
+            #         text += "<answer>" # force the LLM to answer
             llm_input_texts.append(text)
             messages_list.append(messages)
 
@@ -280,11 +306,14 @@ class ContextManager:
         position_ids = attention_mask.cumsum(dim=-1)
         if prepare_for_update:
             scores = [[i.get('reward', 0.0) for i in env_output['history']] for env_output in env_outputs]
-            score_tensor, loss_mask, response_mask = get_masks_and_scores(input_ids, self.tokenizer, scores, use_turn_scores=self.config.agent_proxy.use_turn_scores, enable_response_mask=self.config.enable_response_mask)
+            score_tensor, loss_mask, response_mask = get_masks_and_scores(input_ids=input_ids, tokenizer=self.tokenizer, messages_list=messages_list, all_scores=scores, use_turn_scores=self.config.agent_proxy.use_turn_scores, enable_response_mask=self.config.enable_response_mask, filter_single_turn=self.config.algorithm.filter_single_turn)
 
-            normalized_score_tensor = score_tensor
+            # pdb.set_trace()
+            normalized_score_tensor = score_tensor.clone()
             if not self.config.agent_proxy.use_turn_scores:
-                normalized_score_tensor = self._normalize_score_tensor(score_tensor, env_outputs)
+                # normalized_score_tensor = self._normalize_score_tensor(score_tensor, env_outputs)
+                normalized_score_tensor = self._normalize_score_tensor(normalized_score_tensor, env_outputs)
+            # pdb.set_trace()
             response_length = response_mask.sum(dim=-1).float().mean().item()
 
         llm_inputs = DataProto()
@@ -299,11 +328,20 @@ class ContextManager:
             llm_inputs.batch["loss_mask"] = loss_mask # remove the first token
             llm_inputs.batch["rm_scores"] = normalized_score_tensor # remove the first token
             llm_inputs.batch["original_rm_scores"] = score_tensor # remove the first token
+            # llm_inputs.batch["judger_scores"] = judger_scores # remove the first token
+        # pdb.set_trace()
         llm_inputs.non_tensor_batch = {
             "env_ids": np.array([env_output["env_id"] for env_output in env_outputs], dtype=object),
             "group_ids": np.array([env_output["group_id"] for env_output in env_outputs], dtype=object),
             "messages_list": np.array(messages_list, dtype=object),
+            "harmful_targets": np.array([env_output["harmful_target"] for env_output in env_outputs], dtype=object),
+            "turn_scores": np.array([env_output.get("turn_scores", None) for env_output in env_outputs], dtype=object),
         }
+        # pdb.set_trace()
+        if prepare_for_update:
+            judger_scores = [[i.get('info', {}).get('score', 0.0) for i in env_output['history']] for env_output in env_outputs]
+            llm_inputs.non_tensor_batch["judger_scores"] = np.array(judger_scores, dtype=object)
+            # pdb.set_trace() # check judger scores
 
         if prepare_for_update:
             metrics = {}
@@ -312,12 +350,23 @@ class ContextManager:
                     if key not in metrics:
                         metrics[key] = []
                     metrics[key].append(value)
-            mean_metrics = {
-                key: np.sum(value) / self.env_nums[key.split("/")[0]]
-                for key, value in metrics.items()
-            }
+            # mean_metrics = {
+            #     key: np.sum(value) / self.env_nums[key.split("/")[0]]
+            #     for key, value in metrics.items()
+            # }
+            mean_metrics = {}
+            for key, value in metrics.items():
+                if isinstance(value[0], list):
+                    continue
+                else:    
+                    arr = np.array(value)
+                    env_key = key.split("/")[0]
+                    mean = np.sum(arr) / self.env_nums[env_key]
+                mean_metrics[key] = mean
+
             for key, values in metrics.items():
-                if not isinstance(values, list):
+                # if not isinstance(values, list):
+                if not isinstance(values, list) or any(isinstance(v, list) for v in values):
                     continue
                 prefix, suffix = key.split("/", 1)
                 non_zero_values = [v for v in values if v != 0]
@@ -327,6 +376,7 @@ class ContextManager:
             metrics = mean_metrics
             metrics["response_length"] = response_length
             llm_inputs.meta_info = {"metrics": metrics}
+        # pdb.set_trace()
         return llm_inputs
 
     def get_env_inputs(self, lm_outputs: DataProto) -> List[Dict]:
@@ -337,12 +387,16 @@ class ContextManager:
             )
         else: # dataproto has textual responses
             responses = lm_outputs.non_tensor_batch['response_texts']
-        responses = ["<think>" + response if self.config.agent_proxy.enable_think else "<answer>" + response for response in responses] # The LLM generation does not include <think> tags. Add them back here.
+        if self.config.ctx_manager.add_prefix_suffix_prompt:
+            responses = ["<think>" + response if self.config.agent_proxy.enable_think else "<answer>" + response for response in responses] # The LLM generation does not include <think> tags. Add them back here.
             
         env_ids = lm_outputs.non_tensor_batch['env_ids']
         env_inputs = []
         for env_id, response in zip(env_ids, responses):
-            llm_response, actions = self._parse_response(response)
+            if self.config.agent_proxy.parse_response:
+                llm_response, actions = self._parse_response(response)
+            else:
+                llm_response, actions = response, [response]
             env_inputs.append({
                 "env_id": env_id,
                 "llm_raw_response": response,
